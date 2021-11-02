@@ -1,0 +1,120 @@
+import argparse
+import logging
+import sys
+
+
+def run(argv):
+  # Import here to avoid __main__ session pickling issues.
+  import io
+  import itertools
+  import matplotlib.pyplot as plt
+  import collatz
+
+  import apache_beam as beam
+  from apache_beam.io import restriction_trackers
+  from apache_beam.options.pipeline_options import PipelineOptions
+
+  class RangeSdf(beam.DoFn, beam.RestrictionProvider):
+    """An SDF producing all the integers in the input range.
+
+    This is preferable to beam.Create(range(...)) as it produces the integers
+    dynamically rather than materializing them up front.  It is an SDF to do
+    so with perfect dynamic sharding.
+    """
+    def initial_restriction(self, desired_range):
+      start, stop = desired_range
+      return restriction_trackers.OffsetRange(start, stop)
+
+    def restriction_size(self, _, restriction):
+      return restriction.size()
+
+    def create_tracker(self, restriction):
+      return restriction_trackers.OffsetRestrictionTracker(restriction)
+
+    def process(self, _, active_range=beam.DoFn.RestrictionParam()):
+      for i in itertools.count(active_range.current_restriction().start):
+        if active_range.try_claim(i):
+          yield i
+        else:
+          break
+
+  class GenerateIntegers(beam.PTransform):
+    def __init__(self, start, stop):
+      self._start = start
+      self._stop = stop
+
+    def expand(self, p):
+      return (
+          p
+          | beam.Create([(self._start, self._stop + 1)])
+          | beam.ParDo(RangeSdf()))
+
+  parser = argparse.ArgumentParser()
+  parser.add_argument('--start', dest='start', type=int, default=1)
+  parser.add_argument('--stop', dest='stop', type=int, default=10000)
+  parser.add_argument('--output', default='./out.png')
+
+  known_args, pipeline_args = parser.parse_known_args(argv)
+
+  with beam.Pipeline(options=PipelineOptions(pipeline_args)) as p:
+
+    # Generate the integers from start to stop (inclusive).
+    integers = p | GenerateIntegers(known_args.start, known_args.stop)
+
+    # Run them through our C++ function and count the results.
+    total = known_args.stop - known_args.start + 1
+    frequencies = (
+        integers
+        | 'CallC++' >> beam.Map(collatz.total_stopping_time)
+        | 'Aggregate' >> (beam.Map(lambda x: (x, 1)) | beam.CombinePerKey(sum))
+        | 'Noramlize' >> beam.MapTuple(lambda x, count: (x, count / total)))
+
+    # Print out the results for debugging.
+    if known_args.stop <= 10:
+      frequencies | beam.Map(print)
+
+    # Define some helper functions.
+    def make_scatter_plot(xy):
+      x, y = zip(*xy)
+      plt.plot(x, y, '.')
+      png_bytes = io.BytesIO()
+      plt.savefig(png_bytes, format='png')
+      png_bytes.seek(0)
+      return png_bytes.read()
+
+    def write_to_path(path, content):
+      """Most Beam IOs write multiple elements to some kind of a container
+      file (e.g. strings to lines of a text file, avro records to an avro file,
+      etc.)  This function writes each element to its own file, given by path.
+      """
+      # Write to a temporary path and to a rename for fault tolerence.
+      tmp_path = path + '.tmp'
+      fs = beam.io.filesystems.FileSystems.get_filesystem(path)
+      with fs.create(tmp_path) as fout:
+        fout.write(content)
+      fs.rename([tmp_path], [path])
+
+    # Store this as a local to avoid capturing the full known_args.
+    output_path = known_args.output
+
+    (
+        p
+        # Create a PCollection with a single element.
+        | 'CreateSingleton' >> beam.Create([None])
+        # Process the single element with a Map function, passing the frequency
+        # PCollection as a side input.
+        # This will cause the normally distributed frequency PCollection to be
+        # colocated and processed as a single unit, producing a single output.
+        | 'MakePlot' >> beam.Map(
+            lambda _,
+            data: make_scatter_plot(data),
+            data=beam.pvalue.AsList(frequencies))
+        # Pair this with the desired filename.
+        | 'PairWithFilename' >> beam.Map(lambda content: (output_path, content))
+        # And actually write it out, using MapTuple to split the tuple into args.
+        | 'WriteToOutput' >> beam.MapTuple(write_to_path))
+
+
+if __name__ == '__main__':
+  logging.getLogger().setLevel(logging.INFO)
+  run(sys.argv)
