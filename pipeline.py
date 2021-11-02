@@ -67,11 +67,17 @@ def run(argv):
         integers
         | 'CallC++' >> beam.Map(collatz.total_stopping_time)
         | 'Aggregate' >> (beam.Map(lambda x: (x, 1)) | beam.CombinePerKey(sum))
-        | 'Noramlize' >> beam.MapTuple(lambda x, count: (x, count / total)))
+        | 'Normalize' >> beam.MapTuple(lambda x, count: (x, count / total)))
 
-    # Print out the results for debugging.
     if known_args.stop <= 10:
+      # Print out the results for debugging.
       frequencies | beam.Map(print)
+    else:
+      # Format and write them to a text file.
+      (
+          frequencies
+          | 'Format' >> beam.MapTuple(lambda count, freq: f'{count}, {freq}')
+          | beam.io.WriteToText(known_args.output + '.txt'))
 
     # Define some helper functions.
     def make_scatter_plot(xy):
@@ -110,7 +116,8 @@ def run(argv):
             data: make_scatter_plot(data),
             data=beam.pvalue.AsList(frequencies))
         # Pair this with the desired filename.
-        | 'PairWithFilename' >> beam.Map(lambda content: (output_path, content))
+        |
+        'PairWithFilename' >> beam.Map(lambda content: (output_path, content))
         # And actually write it out, using MapTuple to split the tuple into args.
         | 'WriteToOutput' >> beam.MapTuple(write_to_path))
 
