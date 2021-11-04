@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import sys
 
 
@@ -55,17 +56,29 @@ def run(argv):
   parser.add_argument('--output', default='./out.png')
 
   known_args, pipeline_args = parser.parse_known_args(argv)
+  # Store this as a local to avoid capturing the full known_args.
+  output_path = known_args.output
 
   with beam.Pipeline(options=PipelineOptions(pipeline_args)) as p:
 
     # Generate the integers from start to stop (inclusive).
     integers = p | GenerateIntegers(known_args.start, known_args.stop)
 
-    # Run them through our C++ function and count the results.
+    # Run them through our C++ function, filtering bad records.
+    # Requires apache beam 2.34 or later.
+    stopping_times, bad_values = (
+        integers
+        | beam.Map(collatz.total_stopping_time).with_exception_handling(
+            use_subprocess=True))
+
+    # Write the bad values to a side channel.
+    bad_values | 'WriteBadValues' >> beam.io.WriteToText(
+        os.path.splitext(output_path)[0] + '-bad.txt')
+
+    # Count the occurrence of each stopping time and normalize.
     total = known_args.stop - known_args.start + 1
     frequencies = (
-        integers
-        | 'CallC++' >> beam.Map(collatz.total_stopping_time)
+        stopping_times
         | 'Aggregate' >> (beam.Map(lambda x: (x, 1)) | beam.CombinePerKey(sum))
         | 'Normalize' >> beam.MapTuple(lambda x, count: (x, count / total)))
 
@@ -77,7 +90,7 @@ def run(argv):
       (
           frequencies
           | 'Format' >> beam.MapTuple(lambda count, freq: f'{count}, {freq}')
-          | beam.io.WriteToText(known_args.output + '.txt'))
+          | beam.io.WriteToText(os.path.splitext(output_path)[0] + '.txt'))
 
     # Define some helper functions.
     def make_scatter_plot(xy):
@@ -99,9 +112,6 @@ def run(argv):
       with fs.create(tmp_path) as fout:
         fout.write(content)
       fs.rename([tmp_path], [path])
-
-    # Store this as a local to avoid capturing the full known_args.
-    output_path = known_args.output
 
     (
         p
