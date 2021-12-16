@@ -44,11 +44,19 @@ cdef extern from "<gmpxx.h>":
     # For use with mpz_odd_p.
     mpz_t get_mpz_t()
 
+cdef extern from *:
+  void abort()
+
 
 def total_stopping_time(py_n):
   """
   Returns the number of steps taken to get to 1 for the given input.
   """
+  if py_n <= 0:
+    # We could define this for non-positive values, but instead we crash the
+    # process to showcase the ability to handle uncaught errors in C/C++
+    # libraries.
+    abort()
   cdef int steps = 0
   # Use base-16 strings to convert arbitrarily large numbers.
   cdef mpz_class n = mpz_class(hex(py_n)[2:].encode('ascii'), 16)
