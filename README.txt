@@ -5,7 +5,7 @@ no matter the library or binding tool of choice.
 
 After installing the requirements
 
-  apt-get install libgmp3
+  apt-get install libgmp3-dev
   pip install -r requirements.txt
 
 the Python bindings can be built by running
@@ -24,11 +24,14 @@ into a docker container. This can be created via
 
   docker build . -t cpp_beam_container
 
-Which can be tested locally with
+Note that this docker file specifies apache/beam_python3.9_sdk:2.46.0 as its base image,
+which must be changed if a different version of Beam and/or Python are being used locally.
+
+This can be tested locally with
 
   python pipeline.py --runner=PortableRunner --job_endpoint=embed --environment_type=DOCKER --environment_config="docker.io/library/cpp_beam_container"
 
-Note that with this run the output will be written inside the docker image; pass --output=gs://... to be able to view it.
+Note that with this run the output will be written *inside* the docker image; pass --output=gs://... to be able to view it.
 
 To run on Dataflow, the docker image must be pushed somewhere accessible, e.g.
 

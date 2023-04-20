@@ -1,4 +1,4 @@
-FROM apache/beam_python3.8_sdk:2.34.0
+FROM apache/beam_python3.9_sdk:2.46.0
 
 # Install a C++ library.
 RUN apt-get update

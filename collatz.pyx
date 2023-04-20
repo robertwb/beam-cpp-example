@@ -1,4 +1,4 @@
-# distutils: langauge = c++
+# distutils: language = c++
 # distutils: libraries = gmp gmpxx
 # cython: language_level = 3
 
